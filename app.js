@@ -93,56 +93,7 @@ let isAdminLoggedIn = false;
 // Google Apps Script Web App URL for sending email receipts & saving to Google Sheet
 const googleScriptURL = "https://script.google.com/macros/s/AKfycbz1uQUfOl_SFFgAwZ7__RRFjPYC1tUqFPhYeq3OqEGy5G4QpH_jTiA6pUj9XdIuzJHReA/exec";
 
-// Open/initialize IndexedDB for storing payment screenshots safely (unlimited quota)
-let db;
-const dbRequest = indexedDB.open("TeejScreenshotsDB", 1);
-dbRequest.onupgradeneeded = function(e) {
-  const database = e.target.result;
-  if (!database.objectStoreNames.contains("screenshots")) {
-    database.createObjectStore("screenshots", { keyPath: "orderId" });
-  }
-};
-dbRequest.onsuccess = function(e) {
-  db = e.target.result;
-};
-dbRequest.onerror = function(e) {
-  console.error("IndexedDB error:", e);
-};
 
-// Save screenshot to IndexedDB
-function saveScreenshot(orderId, base64Data) {
-  if (!db) return;
-  const transaction = db.transaction(["screenshots"], "readwrite");
-  const store = transaction.objectStore("screenshots");
-  store.put({ orderId: orderId, base64: base64Data });
-}
-
-// Retrieve screenshot from IndexedDB
-function getScreenshot(orderId) {
-  return new Promise((resolve) => {
-    if (!db) {
-      resolve(null);
-      return;
-    }
-    const transaction = db.transaction(["screenshots"], "readonly");
-    const store = transaction.objectStore("screenshots");
-    const request = store.get(orderId);
-    request.onsuccess = function(e) {
-      resolve(e.target.result ? e.target.result.base64 : null);
-    };
-    request.onerror = function() {
-      resolve(null);
-    };
-  });
-}
-
-// Delete screenshot from IndexedDB
-function deleteScreenshot(orderId) {
-  if (!db) return;
-  const transaction = db.transaction(["screenshots"], "readwrite");
-  const store = transaction.objectStore("screenshots");
-  store.delete(orderId);
-}
 
 // Khetra payment QR codes map
 const khetraQRCodes = {
@@ -379,17 +330,17 @@ function calculateTotals() {
   document.getElementById("grand-total").innerText = `₹${grandTotal.toFixed(2)}`;
 }
 
-// Toggle UPI payment screenshot group
-function togglePaymentScreenshot() {
+// Toggle UPI payment fields group
+function togglePaymentFields() {
   const method = document.getElementById("payment-method").value;
-  const screenshotGroup = document.getElementById("screenshot-group");
-  if (screenshotGroup) {
+  const upiGroup = document.getElementById("upi-group");
+  if (upiGroup) {
     if (method === "UPI / Scan QR") {
-      screenshotGroup.style.display = "block";
+      upiGroup.style.display = "block";
     } else {
-      screenshotGroup.style.display = "none";
-      const fileInput = document.getElementById("payment-screenshot");
-      if (fileInput) fileInput.value = "";
+      upiGroup.style.display = "none";
+      const upiInput = document.getElementById("payment-upi-id");
+      if (upiInput) upiInput.value = "";
     }
   }
 }
@@ -468,12 +419,6 @@ function renderHistoryTable(orders) {
   orders.forEach(order => {
     const row = document.createElement("tr");
     
-    // Screenshot cell
-    let screenshotHTML = "-";
-    if (order.screenshotUrl && order.screenshotUrl !== "-") {
-      screenshotHTML = `<a href="${order.screenshotUrl}" target="_blank" style="color: var(--secondary-color); font-weight: bold; text-decoration: underline;">View Receipt</a>`;
-    }
-    
     row.innerHTML = `
       <td>${order.id}</td>
       <td>${order.khetra || ""}</td>
@@ -481,7 +426,7 @@ function renderHistoryTable(orders) {
       <td>${order.mobile}</td>
       <td>${order.email || "-"}</td>
       <td>${order.paymentMethod || "Cash on Delivery"}</td>
-      <td style="text-align: center;">${screenshotHTML}</td>
+      <td>${order.upiId || "-"}</td>
       <td>${order.qty} packs</td>
       <td>₹${order.total.toFixed(2)}</td>
       <td class="action-links">
@@ -540,47 +485,6 @@ function viewHistoryDetail(orderId, customer, mobile, email, khetra, paymentMeth
   document.getElementById("bill-modal").style.display = "flex";
 }
 
-// Compress payment screenshot image before saving to localStorage
-function compressImage(file, maxWidth, maxHeight, quality) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target.result;
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > maxWidth) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          }
-        } else {
-          if (height > maxHeight) {
-            width = Math.round((width * maxHeight) / height);
-            height = maxHeight;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
-
-        // Convert to compressed JPEG data URL
-        const dataUrl = canvas.toDataURL("image/jpeg", quality);
-        resolve(dataUrl);
-      };
-      img.onerror = (err) => reject(err);
-    };
-    reader.onerror = (err) => reject(err);
-  });
-}
-
 // Submit the Order (replaces generateBill)
 function submitOrder() {
   const khetra = document.getElementById("khetra").value;
@@ -588,7 +492,7 @@ function submitOrder() {
   const custMobile = document.getElementById("customer-mobile").value.trim();
   const custEmail = document.getElementById("customer-email").value.trim();
   const paymentMethod = document.getElementById("payment-method").value;
-  const fileInput = document.getElementById("payment-screenshot");
+  const upiInput = document.getElementById("payment-upi-id");
 
   if (!custName) {
     alert("Please enter Customer Name.");
@@ -677,35 +581,26 @@ function submitOrder() {
     return;
   }
 
-  // Validate UPI payment screenshot
-  if (paymentMethod === "UPI / Scan QR" && (!fileInput.files || !fileInput.files[0])) {
-    alert("Please attach a payment screenshot for UPI/QR Code payments.");
-    return;
+  // Validate UPI transaction ID
+  let upiId = "";
+  if (paymentMethod === "UPI / Scan QR") {
+    upiId = upiInput.value.trim();
+    if (!upiId) {
+      alert("Please enter the UPI Transaction ID.");
+      return;
+    }
+    if (!/^\d+$/.test(upiId)) {
+      alert("UPI Transaction ID must contain only numerical digits.");
+      return;
+    }
   }
 
   const orderId = "ORD-" + Math.floor(100000 + Math.random() * 900000);
-
-  // If there is a file, compress it and save
-  if (paymentMethod === "UPI / Scan QR" && fileInput.files[0]) {
-    compressImage(fileInput.files[0], 800, 1000, 0.8) // High resolution compression
-      .then(compressedBase64 => {
-        processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, paymentMethod, compressedBase64, activeItems, totalQty, grandTotal);
-      })
-      .catch(err => {
-        console.error("Compression failed, using original:", err);
-        const reader = new FileReader();
-        reader.onload = function(e) {
-          processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, paymentMethod, e.target.result, activeItems, totalQty, grandTotal);
-        };
-        reader.readAsDataURL(fileInput.files[0]);
-      });
-  } else {
-    processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, paymentMethod, null, activeItems, totalQty, grandTotal);
-  }
+  processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, paymentMethod, upiId, activeItems, totalQty, grandTotal);
 }
 
 // Process the order saving
-function processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, paymentMethod, screenshotBase64, activeItems, totalQty, grandTotal) {
+function processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, paymentMethod, upiId, activeItems, totalQty, grandTotal) {
   let tbodyHTML = "";
   activeItems.forEach(item => {
     let displayName = `${item.productName} (${item.category})`;
@@ -728,7 +623,7 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, pa
         <strong>Mobile:</strong> ${custMobile}<br>
         <strong>Email:</strong> ${custEmail}<br>
         <strong>Khetra:</strong> ${khetra}<br>
-        <strong>Payment Method:</strong> ${paymentMethod}
+        <strong>Payment Method:</strong> ${paymentMethod}${upiId ? `<br><strong>UPI UTR ID:</strong> ${upiId}` : ''}
       </p>
       <table class="bill-table" border="1" cellpadding="6" cellspacing="0" style="width:100%; border-collapse: collapse;">
         <thead style="background-color: #f2f2f2;">
@@ -760,7 +655,7 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, pa
     mobile: custMobile,
     email: custEmail,
     paymentMethod: paymentMethod,
-    hasScreenshot: screenshotBase64 ? true : false,
+    upiId: upiId || "-",
     qty: totalQty,
     total: grandTotal,
     items: activeItems,
@@ -770,11 +665,6 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, pa
 
   orderHistory.unshift(newOrder);
   localStorage.setItem("order_history_teej", JSON.stringify(orderHistory));
-  
-  // Save the screenshot to IndexedDB (unlimited storage)
-  if (screenshotBase64) {
-    saveScreenshot(orderId, screenshotBase64);
-  }
 
   // Trigger Google Apps Script to send email and save to spreadsheet
   if (googleScriptURL) {
@@ -791,7 +681,7 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, pa
         mobile: custMobile,
         email: custEmail,
         paymentMethod: paymentMethod,
-        hasScreenshot: screenshotBase64 ? true : false,
+        upiId: upiId || "-",
         qty: totalQty,
         total: grandTotal,
         items: activeItems,
@@ -831,7 +721,7 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, pa
   document.getElementById("customer-mobile").value = "";
   document.getElementById("customer-email").value = "";
   document.getElementById("payment-method").value = "Cash on Delivery";
-  togglePaymentScreenshot();
+  togglePaymentFields();
   calculateTotals();
 
   alert("Order Submitted Successfully! Email receipt has been sent.");
@@ -877,9 +767,6 @@ function updateHistoryTable() {
   orderHistory.forEach(order => {
     const row = document.createElement("tr");
     
-    // Placeholder screenshot cell
-    const screenshotCellId = `screenshot_cell_${order.id}`;
-    
     row.innerHTML = `
       <td>${order.id}</td>
       <td>${order.khetra || order.taker || ""}</td>
@@ -887,7 +774,7 @@ function updateHistoryTable() {
       <td>${order.mobile}</td>
       <td>${order.email || "-"}</td>
       <td>${order.paymentMethod || "Cash on Delivery"}</td>
-      <td style="text-align: center;" id="${screenshotCellId}">-</td>
+      <td>${order.upiId || "-"}</td>
       <td>${order.qty} packs</td>
       <td>₹${order.total.toFixed(2)}</td>
       <td class="action-links">
@@ -896,18 +783,6 @@ function updateHistoryTable() {
       </td>
     `;
     tbody.appendChild(row);
-    
-    // Load screenshot asynchronously from IndexedDB
-    if (order.hasScreenshot) {
-      getScreenshot(order.id).then(base64 => {
-        if (base64) {
-          const cell = document.getElementById(screenshotCellId);
-          if (cell) {
-            cell.innerHTML = `<a href="${base64}" target="_blank"><img src="${base64}" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; display: block; margin: 0 auto; cursor: pointer;" alt="Receipt"></a>`;
-          }
-        }
-      });
-    }
   });
 }
 
@@ -927,7 +802,6 @@ function deleteHistoryOrder(orderId) {
   if (confirm("Delete this order from history?")) {
     orderHistory = orderHistory.filter(o => o.id !== orderId);
     localStorage.setItem("order_history_teej", JSON.stringify(orderHistory));
-    deleteScreenshot(orderId); // Delete from IndexedDB
     updateHistoryTable();
   }
 }
@@ -958,7 +832,7 @@ function exportHistoryCSV() {
   let csvRows = [];
   
   // Header row
-  let headerRow = ["Timestamp", "Khetra", "Customer Name", "Mobile Number", "Payment Method", "Screenshot Attached"].concat(productHeaders).concat(["Total Packs", "Total Cost"]);
+  let headerRow = ["Timestamp", "Khetra", "Customer Name", "Mobile Number", "Email Address", "Payment Method", "UPI Transaction ID"].concat(productHeaders).concat(["Total Packs", "Total Cost"]);
   csvRows.push(headerRow.map(h => `"${h}"`).join(","));
 
   // Data rows
@@ -968,8 +842,9 @@ function exportHistoryCSV() {
       order.khetra || order.taker || "",
       order.customer,
       order.mobile,
+      order.email || "-",
       order.paymentMethod || "Cash on Delivery",
-      order.hasScreenshot ? "Yes" : "No"
+      order.upiId || "-"
     ];
 
     // For each product header, check quantity in order items
