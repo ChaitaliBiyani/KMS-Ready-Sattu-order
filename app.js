@@ -90,6 +90,57 @@ let currentGeneratedHTML = "";
 let activeOrderId = "";
 let isAdminLoggedIn = false;
 
+// Open/initialize IndexedDB for storing payment screenshots safely (unlimited quota)
+let db;
+const dbRequest = indexedDB.open("TeejScreenshotsDB", 1);
+dbRequest.onupgradeneeded = function(e) {
+  const database = e.target.result;
+  if (!database.objectStoreNames.contains("screenshots")) {
+    database.createObjectStore("screenshots", { keyPath: "orderId" });
+  }
+};
+dbRequest.onsuccess = function(e) {
+  db = e.target.result;
+};
+dbRequest.onerror = function(e) {
+  console.error("IndexedDB error:", e);
+};
+
+// Save screenshot to IndexedDB
+function saveScreenshot(orderId, base64Data) {
+  if (!db) return;
+  const transaction = db.transaction(["screenshots"], "readwrite");
+  const store = transaction.objectStore("screenshots");
+  store.put({ orderId: orderId, base64: base64Data });
+}
+
+// Retrieve screenshot from IndexedDB
+function getScreenshot(orderId) {
+  return new Promise((resolve) => {
+    if (!db) {
+      resolve(null);
+      return;
+    }
+    const transaction = db.transaction(["screenshots"], "readonly");
+    const store = transaction.objectStore("screenshots");
+    const request = store.get(orderId);
+    request.onsuccess = function(e) {
+      resolve(e.target.result ? e.target.result.base64 : null);
+    };
+    request.onerror = function() {
+      resolve(null);
+    };
+  });
+}
+
+// Delete screenshot from IndexedDB
+function deleteScreenshot(orderId) {
+  if (!db) return;
+  const transaction = db.transaction(["screenshots"], "readwrite");
+  const store = transaction.objectStore("screenshots");
+  store.delete(orderId);
+}
+
 // Khetra payment QR codes map
 const khetraQRCodes = {
   "Ghatkopar": "qrcodes/ghatkopar.svg",
@@ -365,6 +416,47 @@ function toggleAdminAccess() {
   }
 }
 
+// Compress payment screenshot image before saving to localStorage
+function compressImage(file, maxWidth, maxHeight, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Convert to compressed JPEG data URL
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        resolve(dataUrl);
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+}
+
 // Submit the Order (replaces generateBill)
 function submitOrder() {
   const khetra = document.getElementById("khetra").value;
@@ -458,14 +550,21 @@ function submitOrder() {
 
   const orderId = "ORD-" + Math.floor(100000 + Math.random() * 900000);
 
-  // If there is a file, read it as base64
+  // If there is a file, compress it and save
   if (paymentMethod === "UPI / Scan QR" && fileInput.files[0]) {
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      const base64Data = e.target.result;
-      processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod, base64Data, activeItems, totalQty, grandTotal);
-    };
-    reader.readAsDataURL(fileInput.files[0]);
+    compressImage(fileInput.files[0], 400, 600, 0.6)
+      .then(compressedBase64 => {
+        processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod, compressedBase64, activeItems, totalQty, grandTotal);
+      })
+      .catch(err => {
+        console.error("Compression failed, using original:", err);
+        // Fallback to original file read if canvas compression fails
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod, e.target.result, activeItems, totalQty, grandTotal);
+        };
+        reader.readAsDataURL(fileInput.files[0]);
+      });
   } else {
     processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod, null, activeItems, totalQty, grandTotal);
   }
@@ -605,11 +704,8 @@ function updateHistoryTable() {
   orderHistory.forEach(order => {
     const row = document.createElement("tr");
     
-    // Screenshot cell
-    let screenshotHTML = "-";
-    if (order.screenshot) {
-      screenshotHTML = `<a href="${order.screenshot}" target="_blank"><img src="${order.screenshot}" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; display: block; margin: 0 auto; cursor: pointer;" alt="Receipt"></a>`;
-    }
+    // Placeholder screenshot cell
+    const screenshotCellId = `screenshot_cell_${order.id}`;
     
     row.innerHTML = `
       <td>${order.id}</td>
@@ -617,7 +713,7 @@ function updateHistoryTable() {
       <td>${order.customer}</td>
       <td>${order.mobile}</td>
       <td>${order.paymentMethod || "Cash on Delivery"}</td>
-      <td style="text-align: center;">${screenshotHTML}</td>
+      <td style="text-align: center;" id="${screenshotCellId}">-</td>
       <td>${order.qty} packs</td>
       <td>₹${order.total.toFixed(2)}</td>
       <td class="action-links">
@@ -626,6 +722,18 @@ function updateHistoryTable() {
       </td>
     `;
     tbody.appendChild(row);
+    
+    // Load screenshot asynchronously from IndexedDB
+    if (order.hasScreenshot) {
+      getScreenshot(order.id).then(base64 => {
+        if (base64) {
+          const cell = document.getElementById(screenshotCellId);
+          if (cell) {
+            cell.innerHTML = `<a href="${base64}" target="_blank"><img src="${base64}" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; display: block; margin: 0 auto; cursor: pointer;" alt="Receipt"></a>`;
+          }
+        }
+      });
+    }
   });
 }
 
@@ -645,6 +753,7 @@ function deleteHistoryOrder(orderId) {
   if (confirm("Delete this order from history?")) {
     orderHistory = orderHistory.filter(o => o.id !== orderId);
     localStorage.setItem("order_history_teej", JSON.stringify(orderHistory));
+    deleteScreenshot(orderId); // Delete from IndexedDB
     updateHistoryTable();
   }
 }
@@ -686,7 +795,7 @@ function exportHistoryCSV() {
       order.customer,
       order.mobile,
       order.paymentMethod || "Cash on Delivery",
-      order.screenshot ? "Yes" : "No"
+      order.hasScreenshot ? "Yes" : "No"
     ];
 
     // For each product header, check quantity in order items
