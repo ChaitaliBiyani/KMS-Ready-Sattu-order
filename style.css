@@ -142,8 +142,23 @@ header p {
   gap: 20px;
 }
 
+.grid-4 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 1024px) {
+  .grid-4 {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 @media (max-width: 768px) {
   .grid-3 {
+    grid-template-columns: 1fr;
+  }
+  .grid-4 {
     grid-template-columns: 1fr;
   }
 }

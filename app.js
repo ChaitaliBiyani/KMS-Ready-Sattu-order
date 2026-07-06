@@ -90,6 +90,9 @@ let currentGeneratedHTML = "";
 let activeOrderId = "";
 let isAdminLoggedIn = false;
 
+// Google Apps Script Web App URL for sending email receipts & saving to Google Sheet
+const googleScriptURL = "https://script.google.com/macros/s/YOUR_DEPLOYED_ID/exec";
+
 // Open/initialize IndexedDB for storing payment screenshots safely (unlimited quota)
 let db;
 const dbRequest = indexedDB.open("TeejScreenshotsDB", 1);
@@ -462,6 +465,7 @@ function submitOrder() {
   const khetra = document.getElementById("khetra").value;
   const custName = document.getElementById("customer-name").value.trim();
   const custMobile = document.getElementById("customer-mobile").value.trim();
+  const custEmail = document.getElementById("customer-email").value.trim();
   const paymentMethod = document.getElementById("payment-method").value;
   const fileInput = document.getElementById("payment-screenshot");
 
@@ -471,6 +475,16 @@ function submitOrder() {
   }
   if (!custMobile) {
     alert("Please enter Mobile Number.");
+    return;
+  }
+  if (!custEmail) {
+    alert("Please enter Email Address.");
+    return;
+  }
+  // Basic email pattern check
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailPattern.test(custEmail)) {
+    alert("Please enter a valid Email Address.");
     return;
   }
 
@@ -552,26 +566,25 @@ function submitOrder() {
 
   // If there is a file, compress it and save
   if (paymentMethod === "UPI / Scan QR" && fileInput.files[0]) {
-    compressImage(fileInput.files[0], 400, 600, 0.6)
+    compressImage(fileInput.files[0], 800, 1000, 0.8) // High resolution compression
       .then(compressedBase64 => {
-        processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod, compressedBase64, activeItems, totalQty, grandTotal);
+        processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, compressedBase64, activeItems, totalQty, grandTotal);
       })
       .catch(err => {
         console.error("Compression failed, using original:", err);
-        // Fallback to original file read if canvas compression fails
         const reader = new FileReader();
         reader.onload = function(e) {
-          processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod, e.target.result, activeItems, totalQty, grandTotal);
+          processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, e.target.result, activeItems, totalQty, grandTotal);
         };
         reader.readAsDataURL(fileInput.files[0]);
       });
   } else {
-    processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod, null, activeItems, totalQty, grandTotal);
+    processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, null, activeItems, totalQty, grandTotal);
   }
 }
 
 // Process the order saving
-function processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod, screenshotBase64, activeItems, totalQty, grandTotal) {
+function processSubmitOrder(orderId, khetra, custName, custMobile, custEmail, screenshotBase64, activeItems, totalQty, grandTotal) {
   let tbodyHTML = "";
   activeItems.forEach(item => {
     let displayName = `${item.productName} (${item.category})`;
@@ -592,6 +605,7 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod
         <strong>Order ID:</strong> ${orderId}<br>
         <strong>Name:</strong> ${custName}<br>
         <strong>Mobile:</strong> ${custMobile}<br>
+        <strong>Email:</strong> ${custEmail}<br>
         <strong>Khetra:</strong> ${khetra}<br>
         <strong>Payment Method:</strong> ${paymentMethod}
       </p>
@@ -623,8 +637,9 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod
     khetra: khetra,
     customer: custName,
     mobile: custMobile,
+    email: custEmail,
     paymentMethod: paymentMethod,
-    screenshot: screenshotBase64,
+    hasScreenshot: screenshotBase64 ? true : false,
     qty: totalQty,
     total: grandTotal,
     items: activeItems,
@@ -634,6 +649,41 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod
 
   orderHistory.unshift(newOrder);
   localStorage.setItem("order_history_teej", JSON.stringify(orderHistory));
+  
+  // Save the screenshot to IndexedDB (unlimited storage)
+  if (screenshotBase64) {
+    saveScreenshot(orderId, screenshotBase64);
+  }
+
+  // Trigger Google Apps Script to send email and save to spreadsheet
+  if (googleScriptURL) {
+    fetch(googleScriptURL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        id: orderId,
+        khetra: khetra,
+        customer: custName,
+        mobile: custMobile,
+        email: custEmail,
+        paymentMethod: paymentMethod,
+        hasScreenshot: screenshotBase64 ? true : false,
+        qty: totalQty,
+        total: grandTotal,
+        items: activeItems,
+        timestamp: newOrder.timestamp
+      })
+    })
+    .then(() => {
+      console.log("Order pushed to Google Sheets and email queued successfully!");
+    })
+    .catch(err => {
+      console.error("Failed to connect to Google Apps Script Web App:", err);
+    });
+  }
   
   if (isAdminLoggedIn) {
     updateHistoryTable();
@@ -658,11 +708,12 @@ function processSubmitOrder(orderId, khetra, custName, custMobile, paymentMethod
   document.querySelectorAll(".qty-warning").forEach(warning => warning.style.display = "none");
   document.getElementById("customer-name").value = "";
   document.getElementById("customer-mobile").value = "";
+  document.getElementById("customer-email").value = "";
   document.getElementById("payment-method").value = "Cash on Delivery";
   togglePaymentScreenshot();
   calculateTotals();
 
-  alert("Order Submitted Successfully!");
+  alert("Order Submitted Successfully! Email receipt has been sent.");
 }
 
 // Close Modal
@@ -682,6 +733,7 @@ function resetForm() {
     document.querySelectorAll(".qty-input").forEach(input => input.value = 0);
     document.getElementById("customer-name").value = "";
     document.getElementById("customer-mobile").value = "";
+    document.getElementById("customer-email").value = "";
     calculateTotals();
   }
 }
