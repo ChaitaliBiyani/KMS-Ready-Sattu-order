@@ -31,14 +31,14 @@ function doPost(e) {
       itemsDetail += item.productName + " (" + item.measure + ") x " + item.quantity + "\n";
     });
     
-    // Append row: Timestamp, Order ID, Customer Name, Mobile, Email, Khetra, Payment Method, UPI ID, Total Qty, Total Cost, Items Detail
+    // Append row: Timestamp, Order ID, Customer Name, Mobile, Email, Kshetra, Payment Method, UPI ID, Total Qty, Total Cost, Items Detail
     sheet.appendRow([
       new Date(),
       data.id,
       data.customer,
       data.mobile,
       data.email,
-      data.khetra,
+      data.kshetra || data.khetra || "-",
       data.paymentMethod,
       data.upiId || "-",
       data.qty,
@@ -71,7 +71,7 @@ function doPost(e) {
           '<p style="margin: 0 0 8px 0; font-weight: bold; color: #111827;">Order Details:</p>' +
           '<table style="width: 100%; font-size: 0.9rem; line-height: 1.5; border-collapse: collapse;">' +
             '<tr><td style="color: #4b5563; width: 130px; padding: 3px 0;">Order ID:</td><td style="padding: 3px 0;"><strong>' + data.id + '</strong></td></tr>' +
-            '<tr><td style="color: #4b5563; padding: 3px 0;">Khetra / Area:</td><td style="padding: 3px 0;">' + data.khetra + '</td></tr>' +
+            '<tr><td style="color: #4b5563; padding: 3px 0;">Kshetra / Area:</td><td style="padding: 3px 0;">' + (data.kshetra || data.khetra || "-") + '</td></tr>' +
             '<tr><td style="color: #4b5563; padding: 3px 0;">Mobile Number:</td><td style="padding: 3px 0;">' + data.mobile + '</td></tr>' +
             '<tr><td style="color: #4b5563; padding: 3px 0;">Payment Method:</td><td style="padding: 3px 0;">' + data.paymentMethod + '</td></tr>' +
             (data.upiId && data.upiId !== "-" ? '<tr><td style="color: #4b5563; padding: 3px 0;">UPI Transaction ID:</td><td style="padding: 3px 0;"><strong>' + data.upiId + '</strong></td></tr>' : '') +
@@ -130,7 +130,7 @@ function doGet(e) {
     
     var orders = [];
     
-    // Headers: 0: Timestamp, 1: Order ID, 2: Customer Name, 3: Mobile, 4: Email, 5: Khetra, 6: Payment Method, 7: UPI ID, 8: Total Qty, 9: Total Cost, 10: Items Detail
+    // Headers: 0: Timestamp, 1: Order ID, 2: Customer Name, 3: Mobile, 4: Email, 5: Kshetra, 6: Payment Method, 7: UPI ID, 8: Total Qty, 9: Total Cost, 10: Items Detail
     for (var i = 1; i < rows.length; i++) {
       var row = rows[i];
       if (row[1]) { // Verify Order ID exists
@@ -140,7 +140,7 @@ function doGet(e) {
           customer: row[2],
           mobile: row[3],
           email: row[4],
-          khetra: row[5],
+          kshetra: row[5],
           paymentMethod: row[6],
           upiId: row[7],
           qty: row[8],
